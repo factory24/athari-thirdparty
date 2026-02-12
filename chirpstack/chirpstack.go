@@ -98,7 +98,7 @@ func (client *chirpstackClient) CreateDevice(dto dtos.DeviceDTO) error {
 		Device: &api.Device{
 			DevEui:          dto.Eui,
 			Name:            dto.Name,
-			Description:     dto.ItemType + " " + dto.SerialNumber,
+			Description:     dto.Description,
 			ApplicationId:   os.Getenv("CS.APPLICATION_ID"),
 			DeviceProfileId: os.Getenv("CS.DEVICE_PROFILE_ID"),
 			SkipFcntCheck:   true,
