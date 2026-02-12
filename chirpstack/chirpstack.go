@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chirpstack/chirpstack/api/go/v4/api"
+	"github.com/factory24/athari-thirdparty/pkg/data/dtos"
 	"google.golang.org/grpc"
 )
 
@@ -27,33 +28,17 @@ func (a APIToken) RequireTransportSecurity() bool {
 	return false
 }
 
-// GatewayDTO represents the data needed to create or update a gateway
-type GatewayDTO struct {
-	SerialNumber  string
-	Name          string
-	Description   string
-	Location      *api.Location
-	StatsInterval uint32
-}
-
-// DeviceDTO represents the data needed to create or update a device
-type DeviceDTO struct {
-	Eui         string
-	Name        string
-	Description string
-}
-
 type NetworkServerClient interface {
 	Connect()
-	CreateDevice(dto DeviceDTO) error
-	CreateGateway(dto GatewayDTO) error
+	CreateDevice(dto dtos.DeviceDTO) error
+	CreateGateway(dto dtos.GatewayDTO) error
 	Enqueue(context.Context, *api.EnqueueDeviceQueueItemRequest) (*api.EnqueueDeviceQueueItemResponse, error)
 	GetDevice(eui string) (*api.Device, error)
 	GetGateway(context.Context, string) (*api.Gateway, *time.Time, error)
 	GetQueue(ctx context.Context, request *api.GetDeviceQueueItemsRequest) (*api.GetDeviceQueueItemsResponse, error)
 	SetKey(eui, key string) error
-	UpdateDevice(dto DeviceDTO) error
-	UpdateGateway(dto GatewayDTO) error
+	UpdateDevice(dto dtos.DeviceDTO) error
+	UpdateGateway(dto dtos.GatewayDTO) error
 }
 
 type chirpstackClient struct {
@@ -108,7 +93,7 @@ func (client *chirpstackClient) GetDevice(eui string) (*api.Device, error) {
 	return res.GetDevice(), nil
 }
 
-func (client *chirpstackClient) CreateDevice(dto DeviceDTO) error {
+func (client *chirpstackClient) CreateDevice(dto dtos.DeviceDTO) error {
 	request := &api.CreateDeviceRequest{
 		Device: &api.Device{
 			DevEui:          dto.Eui,
@@ -133,7 +118,7 @@ func (client *chirpstackClient) CreateDevice(dto DeviceDTO) error {
 	return err
 }
 
-func (client *chirpstackClient) CreateGateway(dto GatewayDTO) error {
+func (client *chirpstackClient) CreateGateway(dto dtos.GatewayDTO) error {
 	gateway := &api.CreateGatewayRequest{
 		Gateway: &api.Gateway{
 			GatewayId:     dto.SerialNumber,
@@ -166,7 +151,7 @@ func (client *chirpstackClient) GetGateway(ctx context.Context, serialNumber str
 	return get.GetGateway(), &asTime, nil
 }
 
-func (client *chirpstackClient) UpdateDevice(dto DeviceDTO) error {
+func (client *chirpstackClient) UpdateDevice(dto dtos.DeviceDTO) error {
 	request := &api.UpdateDeviceRequest{
 		Device: &api.Device{
 			DevEui:          dto.Eui,
@@ -189,7 +174,7 @@ func (client *chirpstackClient) UpdateDevice(dto DeviceDTO) error {
 	return nil
 }
 
-func (client *chirpstackClient) UpdateGateway(dto GatewayDTO) error {
+func (client *chirpstackClient) UpdateGateway(dto dtos.GatewayDTO) error {
 	gateway := &api.UpdateGatewayRequest{
 		Gateway: &api.Gateway{
 			GatewayId:     dto.SerialNumber,
