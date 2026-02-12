@@ -10,7 +10,7 @@ type GatewayDTO struct {
 	Name          string
 	Description   string
 	Location      *api.Location
-	StatsInterval uint32
+	StatsInterval uint32 // Stats interval in seconds
 }
 
 // DeviceDTO represents the data needed to create or update a device
