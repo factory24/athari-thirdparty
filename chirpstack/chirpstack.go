@@ -29,19 +29,30 @@ func (a APIToken) RequireTransportSecurity() bool {
 
 // GatewayDTO represents the data needed to create or update a gateway
 type GatewayDTO struct {
-	SerialNumber string
-	Name         string
-	Description  string
-	Location     *api.Location
+	SerialNumber  string
+	Name          string
+	Description   string
+	Location      *api.Location
+	StatsInterval uint32
+}
+
+// DeviceDTO represents the data needed to create or update a device
+type DeviceDTO struct {
+	Eui         string
+	Name        string
+	Description string
 }
 
 type NetworkServerClient interface {
 	Connect()
+	CreateDevice(dto DeviceDTO) error
 	CreateGateway(dto GatewayDTO) error
 	Enqueue(context.Context, *api.EnqueueDeviceQueueItemRequest) (*api.EnqueueDeviceQueueItemResponse, error)
 	GetDevice(eui string) (*api.Device, error)
 	GetGateway(context.Context, string) (*api.Gateway, *time.Time, error)
 	GetQueue(ctx context.Context, request *api.GetDeviceQueueItemsRequest) (*api.GetDeviceQueueItemsResponse, error)
+	SetKey(eui, key string) error
+	UpdateDevice(dto DeviceDTO) error
 	UpdateGateway(dto GatewayDTO) error
 }
 
@@ -97,6 +108,31 @@ func (client *chirpstackClient) GetDevice(eui string) (*api.Device, error) {
 	return res.GetDevice(), nil
 }
 
+func (client *chirpstackClient) CreateDevice(dto DeviceDTO) error {
+	request := &api.CreateDeviceRequest{
+		Device: &api.Device{
+			DevEui:          dto.Eui,
+			Name:            dto.Name,
+			Description:     dto.Description,
+			ApplicationId:   os.Getenv("CS.APPLICATION_ID"),
+			DeviceProfileId: os.Getenv("CS.DEVICE_PROFILE_ID"),
+			SkipFcntCheck:   true,
+			IsDisabled:      false,
+			Variables:       nil,
+			Tags:            nil,
+			JoinEui:         os.Getenv("CS.LORA_JOIN_EUI"),
+		},
+	}
+
+	_, err := client.deviceClient.Create(context.Background(), request)
+	if err != nil {
+		log.Println("error creating device", err)
+		return err
+	}
+
+	return err
+}
+
 func (client *chirpstackClient) CreateGateway(dto GatewayDTO) error {
 	gateway := &api.CreateGatewayRequest{
 		Gateway: &api.Gateway{
@@ -107,7 +143,7 @@ func (client *chirpstackClient) CreateGateway(dto GatewayDTO) error {
 			Location:      dto.Location,
 			Tags:          nil,
 			Metadata:      nil,
-			StatsInterval: 30,
+			StatsInterval: dto.StatsInterval,
 		},
 	}
 	_, err := client.gatewayServiceClient.Create(context.Background(), gateway)
@@ -130,6 +166,29 @@ func (client *chirpstackClient) GetGateway(ctx context.Context, serialNumber str
 	return get.GetGateway(), &asTime, nil
 }
 
+func (client *chirpstackClient) UpdateDevice(dto DeviceDTO) error {
+	request := &api.UpdateDeviceRequest{
+		Device: &api.Device{
+			DevEui:          dto.Eui,
+			Name:            dto.Name,
+			Description:     dto.Description,
+			ApplicationId:   os.Getenv("CS.APPLICATION_ID"),
+			DeviceProfileId: os.Getenv("CS.DEVICE_PROFILE_ID"),
+			SkipFcntCheck:   true,
+			IsDisabled:      false,
+			Variables:       nil,
+			Tags:            nil,
+			JoinEui:         os.Getenv("CS.LORA_JOIN_EUI"),
+		},
+	}
+	_, err := client.deviceClient.Update(context.Background(), request)
+	if err != nil {
+		log.Println("error updating device", err)
+		return err
+	}
+	return nil
+}
+
 func (client *chirpstackClient) UpdateGateway(dto GatewayDTO) error {
 	gateway := &api.UpdateGatewayRequest{
 		Gateway: &api.Gateway{
@@ -140,7 +199,7 @@ func (client *chirpstackClient) UpdateGateway(dto GatewayDTO) error {
 			Location:      dto.Location,
 			Tags:          nil,
 			Metadata:      nil,
-			StatsInterval: 30,
+			StatsInterval: dto.StatsInterval,
 		},
 	}
 	_, err := client.gatewayServiceClient.Update(context.Background(), gateway)
@@ -149,6 +208,40 @@ func (client *chirpstackClient) UpdateGateway(dto GatewayDTO) error {
 	}
 
 	return nil
+}
+
+func (client *chirpstackClient) SetKey(eui, key string) error {
+
+	_, err := client.deviceClient.GetKeys(context.Background(), &api.GetDeviceKeysRequest{
+		DevEui: eui,
+	})
+
+	if err == nil {
+		_, err = client.deviceClient.UpdateKeys(context.Background(), &api.UpdateDeviceKeysRequest{
+			DeviceKeys: &api.DeviceKeys{
+				DevEui: eui,
+				AppKey: key,
+				NwkKey: key,
+			},
+		})
+		if err != nil {
+			log.Println("error creating device keys", err)
+			return err
+		}
+		return nil
+	}
+	_, err = client.deviceClient.CreateKeys(context.Background(), &api.CreateDeviceKeysRequest{
+		DeviceKeys: &api.DeviceKeys{
+			DevEui: eui,
+			AppKey: key,
+			NwkKey: key,
+		},
+	})
+	if err != nil {
+		log.Println("error creating device keys", err)
+	}
+
+	return err
 }
 
 func (client *chirpstackClient) Enqueue(
