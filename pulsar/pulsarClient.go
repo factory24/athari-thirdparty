@@ -1,0 +1,372 @@
+package pulsarClient
+
+import (
+	"context"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/factory24/athari-thirdparty/common"
+
+	"github.com/apache/pulsar-client-go/pulsar"
+	"github.com/apache/pulsar-client-go/pulsar/crypto"
+)
+
+const (
+	maxPublishRetries = 5
+)
+
+type EventHeader = common.EventHeader
+
+type EventHandler interface {
+	HandleEvent(header *EventHeader) error
+}
+
+type PulsarClient interface {
+	PublishEvent(topic, eventType string, payload any) error
+	ListenOnTopics(topics []string, subscriptionName string, handler EventHandler) error
+	GetTopics() []string
+	Connect()
+}
+
+type pulsarClient struct {
+	client    pulsar.Client
+	producers map[string]pulsar.Producer
+	mu        sync.RWMutex
+	url       string
+	keyReader crypto.KeyReader
+	encKeys   []string
+}
+
+func NewPulsarClient() PulsarClient {
+	return &pulsarClient{
+		producers: make(map[string]pulsar.Producer),
+	}
+}
+
+func newStringKeyReader(pubKeyStr, privKeyStr string) (crypto.KeyReader, error) {
+	pubKeyStr = strings.ReplaceAll(pubKeyStr, `\n`, "\n")
+	privKeyStr = strings.ReplaceAll(privKeyStr, `\n`, "\n")
+
+	PulsarLogInfo("Public Key (first 20 chars): %s", pubKeyStr[:20])
+	PulsarLogInfo("Public Key (last 20 chars): %s", pubKeyStr[len(pubKeyStr)-20:])
+	PulsarLogInfo("Private Key (first 20 chars): %s", privKeyStr[:20])
+	PulsarLogInfo("Private Key (last 20 chars): %s", privKeyStr[len(privKeyStr)-20:])
+
+	// Log the length of the key strings for debugging
+	fmt.Printf("Public Key Length: %d\n", len(pubKeyStr))
+	fmt.Printf("Private Key Length: %d\n", len(privKeyStr))
+
+	pubBlock, _ := pem.Decode([]byte(pubKeyStr))
+	if pubBlock == nil {
+		return nil, fmt.Errorf("failed to decode public key PEM")
+	}
+	if _, err := x509.ParsePKIXPublicKey(pubBlock.Bytes); err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+
+	privBlock, _ := pem.Decode([]byte(privKeyStr))
+	if privBlock == nil {
+		return nil, fmt.Errorf("failed to decode private key PEM")
+	}
+	// Parse as PKCS#8
+	privKey, err := x509.ParsePKCS8PrivateKey(privBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key as PKCS#8: %w", err)
+	}
+	rsaPrivKey, ok := privKey.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is not an RSA key")
+	}
+
+	// Marshal to PKCS#1 PEM
+	pkcs1Bytes := x509.MarshalPKCS1PrivateKey(rsaPrivKey)
+	pkcs1Pem := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: pkcs1Bytes,
+	})
+
+	tmpPubFile := filepath.Join(os.TempDir(), "pulsar_pub.pem")
+	tmpPrivFile := filepath.Join(os.TempDir(), "pulsar_priv.pem")
+	if err := os.WriteFile(tmpPubFile, []byte(pubKeyStr), 0600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(tmpPrivFile, pkcs1Pem, 0600); err != nil { // Write PKCS#1 PEM
+		return nil, err
+	}
+
+	return crypto.NewFileKeyReader(tmpPubFile, tmpPrivFile), nil
+}
+
+func (p *pulsarClient) Connect() {
+	if p.client != nil {
+		return
+	}
+
+	p.url = os.Getenv("PULSAR.URL")
+	if p.url == "" {
+		log.Fatal("PULSAR.URL environment variable not set")
+	}
+
+	pubKeyStr := os.Getenv("PULSAR.PUBKEY")
+	privKeyStr := os.Getenv("PULSAR.PRIVKEY")
+	encKeyName := os.Getenv("PULSAR.ENCRYPTION.KEY")
+
+	if pubKeyStr != "" && privKeyStr != "" && encKeyName != "" {
+		keyReader, err := newStringKeyReader(pubKeyStr, privKeyStr)
+		if err != nil {
+			log.Fatalf("failed to create key reader: %v", err)
+		}
+		p.keyReader = keyReader
+		p.encKeys = []string{encKeyName}
+		PulsarLogSuccess("String-based key reader created.")
+	} else {
+		PulsarLogInfo("Pulsar encryption keys not set, encryption will be disabled.")
+	}
+
+	client, err := pulsar.NewClient(pulsar.ClientOptions{
+		URL:               p.url,
+		OperationTimeout:  30 * time.Second,
+		ConnectionTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("could not create pulsar client: %v", err)
+	}
+	p.client = client
+	PulsarLogSuccess("Client connected successfully to %s", p.url)
+}
+
+func (p *pulsarClient) GetTopics() []string {
+	pulsarTopics := os.Getenv("EVENT_TOPICS")
+	if pulsarTopics == "" {
+		log.Fatal("EVENT_TOPIC environment variable not set")
+	}
+	topicStrings := strings.Split(pulsarTopics, ",")
+	var topics []string
+	for _, t := range topicStrings {
+		if trimmed := strings.TrimSpace(t); trimmed != "" {
+			topics = append(topics, trimmed)
+		}
+	}
+	if len(topics) == 0 {
+		log.Fatal("No topics found in EVENT_TOPIC")
+	}
+	return topics
+}
+
+func (p *pulsarClient) ListenOnTopics(topics []string, subscriptionName string, handler EventHandler) error {
+	for _, topic := range topics {
+		dlqTopic := topic + ".dead_letter"
+
+		serviceName := os.Getenv("APP.SERVICE.NAME")
+		if serviceName == "" {
+			return fmt.Errorf("APP.SERVICE.NAME environment variable not set")
+		}
+
+		rand.Seed(time.Now().UnixNano())
+		consumerName := fmt.Sprintf("%s-consumer-%02d", serviceName, rand.Intn(100))
+
+		channel := make(chan pulsar.ConsumerMessage, 2000)
+
+		consumerOptions := pulsar.ConsumerOptions{
+			Topics:           topics,
+			SubscriptionName: subscriptionName,
+			Type:             pulsar.Shared,
+			Name:             consumerName,
+			MessageChannel:   channel,
+			DLQ: &pulsar.DLQPolicy{
+				MaxDeliveries:           10,
+				DeadLetterTopic:         dlqTopic,
+				InitialSubscriptionName: subscriptionName,
+			},
+			Decryption: &pulsar.MessageDecryptionInfo{
+				KeyReader:                   p.keyReader,
+				MessageCrypto:               nil,
+				ConsumerCryptoFailureAction: 1,
+			},
+		}
+
+		consumer, err := p.client.Subscribe(consumerOptions)
+		if err != nil {
+			return fmt.Errorf("could not subscribe to topic %s: %w", topic, err)
+		}
+
+		workerCount := 20
+		for i := 0; i < workerCount; i++ {
+			go func(topic string, ch <-chan pulsar.ConsumerMessage, consumer pulsar.Consumer) {
+				defer consumer.Close()
+				for {
+					select {
+					case cm, ok := <-ch:
+						if !ok {
+							PulsarLogError("errorr")
+
+							return
+						}
+
+						p.processMessage(cm.Message, handler, consumer, topic+".dead_letter")
+
+					case <-context.Background().Done():
+						return
+					}
+				}
+			}(topic, channel, consumer)
+		}
+	}
+	return nil
+}
+
+func (p *pulsarClient) processMessage(msg pulsar.Message, handler EventHandler, consumer pulsar.Consumer, dlqTopic string) {
+	header, err := common.ParseEventHeader(msg.Payload())
+	if err != nil {
+		PulsarLogError("Failed to parse event header for message %v: %v", msg.ID(), err)
+		if dlqTopic != "" {
+			PulsarLogError("Sending unparseable message %v to DLQ topic: %s", msg.ID(), dlqTopic)
+			if dlqErr := p.sendToDLQ(dlqTopic, msg, "unparseable_payload", err.Error()); dlqErr != nil {
+				PulsarLogError("CRITICAL: Failed to send message %v to DLQ: %v. Nacking.", msg.ID(), dlqErr)
+				consumer.Nack(msg)
+				return
+			}
+		}
+		consumer.Ack(msg)
+		return
+	}
+
+	header.PrettyLog()
+	if err := handler.HandleEvent(header); err != nil {
+		PulsarLogError("Handler failed to process event '%s' (ID: %v): %v. Nacking message.", header.EventType, msg.ID(), err)
+		consumer.Nack(msg)
+	} else {
+		PulsarLogSuccess("Successfully processed event '%s' (ID: %v)", header.EventType, msg.ID())
+		consumer.Ack(msg)
+	}
+}
+
+func (p *pulsarClient) sendToDLQ(dlqTopic string, originalMsg pulsar.Message, reason, errorDetail string) error {
+	producer, err := p.getOrCreateProducer(dlqTopic)
+	if err != nil {
+		return fmt.Errorf("failed to get producer for DLQ topic %s: %w", dlqTopic, err)
+	}
+
+	properties := map[string]string{
+		"dlq_reason":          reason,
+		"dlq_error_detail":    errorDetail,
+		"original_topic":      originalMsg.Topic(),
+		"original_message_id": originalMsg.ID().String(),
+	}
+	for k, v := range originalMsg.Properties() {
+		properties["original_prop_"+k] = v
+	}
+
+	_, err = producer.Send(context.Background(), &pulsar.ProducerMessage{
+		Payload:    originalMsg.Payload(),
+		Properties: properties,
+	})
+	if err != nil {
+		p.mu.Lock()
+		producer.Close()
+		delete(p.producers, dlqTopic)
+		p.mu.Unlock()
+		return fmt.Errorf("failed to publish message to DLQ topic %s: %w", dlqTopic, err)
+	}
+	return nil
+}
+
+func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error {
+	producer, err := p.getOrCreateProducer(topic)
+	if err != nil {
+		PulsarLogError("failed to get producer for topic %s: %v", topic, err.Error())
+		return fmt.Errorf("failed to get producer for topic %s: %w", topic, err)
+	}
+
+	event := common.NewEvent(topic, eventType, payload)
+	payloadBytes, err := event.Bytes()
+	if err != nil {
+		PulsarLogError("failed to marshal event: %w", err)
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	for i := 0; i <= maxPublishRetries; i++ {
+		_, err = producer.Send(context.Background(), &pulsar.ProducerMessage{
+			Payload: payloadBytes,
+		})
+		if err == nil {
+			PulsarLogInfo("Published event '%s' to topic '%s'", eventType, topic)
+			return nil // Success
+		}
+
+		PulsarLogError("Failed to publish event to topic %s (attempt %d/%d): %w", topic, i+1, maxPublishRetries+1, err)
+
+		// If it's the last retry, or a non-recoverable error, break
+		if i == maxPublishRetries {
+			break
+		}
+
+		// Close and delete producer on error to force recreation on next retry
+		p.mu.Lock()
+		producer.Close()
+		delete(p.producers, topic)
+		p.mu.Unlock()
+
+		time.Sleep(time.Second)                      // Delay before next retry
+		producer, err = p.getOrCreateProducer(topic) // Get a new producer for retry
+		if err != nil {
+			PulsarLogError("Failed to get producer for topic %s on retry (attempt %d/%d): %v", topic, i+1, maxPublishRetries+1, err.Error())
+			return fmt.Errorf("failed to get producer for topic %s on retry: %w", topic, err)
+		}
+	}
+
+	// If we reach here, all retries failed
+	PulsarLogError("All %d retries failed for event to topic %s: %w", maxPublishRetries+1, topic, err)
+	return fmt.Errorf("all %d retries failed to publish event to topic %s: %w", maxPublishRetries+1, topic, err)
+}
+
+func (p *pulsarClient) getOrCreateProducer(topic string) (pulsar.Producer, error) {
+	p.mu.RLock()
+	producer, found := p.producers[topic]
+	p.mu.RUnlock()
+	if found {
+		return producer, nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if producer, found = p.producers[topic]; found {
+		return producer, nil
+	}
+
+	serviceName := os.Getenv("APP.SERVICE.NAME")
+	if serviceName == "" {
+		return nil, fmt.Errorf("APP.SERVICE.NAME environment variable not set")
+	}
+
+	rand.Seed(time.Now().UnixNano())
+	producerName := fmt.Sprintf("%s-producer-%02d", serviceName, rand.Intn(100))
+	PulsarLogSuccess("Producer name ::::: %s", producerName)
+
+	PulsarLogInfo("Creating new producer for topic: %s with name: %s", topic, producerName)
+	newProducer, err := p.client.CreateProducer(pulsar.ProducerOptions{
+		Topic:           topic,
+		DisableBatching: false,
+		Name:            producerName,
+		Encryption: &pulsar.ProducerEncryptionInfo{
+			KeyReader: p.keyReader,
+			Keys:      p.encKeys,
+		},
+		SendTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	p.producers[topic] = newProducer
+	return newProducer, nil
+}
