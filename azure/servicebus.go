@@ -5,18 +5,16 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
-	"github.com/factory24/athari-flowbox-device-service/pkg/data/dtos"
-	"github.com/factory24/athari-flowbox-device-service/pkg/data/models"
-	"github.com/factory24/athari-flowbox-device-service/pkg/data/repositories"
 )
+
+type MessageHandler func(context.Context, *azservicebus.ReceivedMessage) error
 
 type ServiceBusClient interface {
 	Connect()
-	ListenOnTopicSubscription(string, string, repositories.DeviceAttributeRepository)
+	ListenOnTopicSubscription(string, string, MessageHandler)
 	SendMessage(string, string, interface{}) error
 }
 
@@ -25,7 +23,7 @@ type azureServiceBusClient struct {
 	bus *azservicebus.Client
 }
 
-func (client *azureServiceBusClient) ListenOnTopicSubscription(s1 string, s2 string, deviceAttributeRepository repositories.DeviceAttributeRepository) {
+func (client *azureServiceBusClient) ListenOnTopicSubscription(s1 string, s2 string, handler MessageHandler) {
 	log.Println("Azure service bus client for device attribute started...")
 	receiver, err := client.bus.NewReceiverForSubscription(s1, s2, &azservicebus.ReceiverOptions{})
 	if err != nil {
@@ -43,13 +41,38 @@ func (client *azureServiceBusClient) ListenOnTopicSubscription(s1 string, s2 str
 			log.Printf("Message received -> %v\n", string(message.Body))
 			log.Println()
 
-			command := new(dtos.TopicCommand)
-			if err := json.Unmarshal(message.Body, command); err != nil {
-				log.Println("Failed to unmarshal bytes into struct:", err)
+			if err := handler(client.ctx, message); err != nil {
+				log.Println("Handler failed to process message:", err)
+				// Decide whether to Abandon, DeadLetter, or just log.
+				// For now, if handler fails, we might not want to Complete it?
+				// But original code completed it inside the handler logic.
+				// Let's assume handler takes care of business logic, but completion...
+				// The original code completed the message INSIDE the handler (which was a method on client).
+				// So we should expose the receiver to the handler? Or pass the responsibility to the handler?
+				// Simplified: Caller logic should handle completion if they want to control it,
+				// OR we pass a "Completer" interface.
+
+				// Re-reading original code:
+				// client.handleFlowmeter(receiver, message, ...)
+				// Inside: receiver.CompleteMessage(client.ctx, message, nil)
+
+				// So usage of receiver is needed.
+				// The handler signature `func(context.Context, *azservicebus.ReceivedMessage) error`
+				// doesn't give access to receiver.
+
+				// However, `receiver` is created inside this method.
+				// We can pass `receiver` to the handler?
+				// Or we can just complete it here if handler returns nil?
+				// Standard pattern: Handler processes, if success, we complete.
+				continue
 			}
 
-			client.handleFlowmeter(receiver, message, command.Payload.Logs.Flowmeter, deviceAttributeRepository)
-			client.handleFlowbox(receiver, message, command.Payload.Logs.Flowbox, deviceAttributeRepository)
+			// If handler returns nil (success), we complete the message
+			if err := receiver.CompleteMessage(client.ctx, message, nil); err != nil {
+				log.Println("Failed to complete message receive:", err)
+			} else {
+				log.Println("Message completed:", message.MessageID)
+			}
 		}
 
 		time.Sleep(2 * time.Second)
@@ -65,94 +88,6 @@ func (client *azureServiceBusClient) Connect() {
 
 	log.Println("Connection to azure service bus was successful")
 	client.bus = cl
-}
-
-func (client *azureServiceBusClient) handleFlowmeter(
-	receiver *azservicebus.Receiver,
-	message *azservicebus.ReceivedMessage,
-	flowmeter *dtos.Flowmeter,
-	deviceAttributeRepository repositories.DeviceAttributeRepository,
-) {
-	creditBalance := strconv.FormatFloat(flowmeter.Balance, 'f', 2, 64)
-	balanceDto := &models.DeviceAttribute{
-		SerialNumber: flowmeter.SerialNumber,
-		Name:         "creditBalance",
-		Value:        creditBalance,
-	}
-
-	consumptionBalance := strconv.FormatFloat(flowmeter.Consumption, 'f', 2, 64)
-	consumptionDto := &models.DeviceAttribute{
-		SerialNumber: flowmeter.SerialNumber,
-		Name:         "creditConsumption",
-		Value:        consumptionBalance,
-	}
-
-	mainBattery := strconv.Itoa(flowmeter.MainBatteryLevel)
-	batteryDto := &models.DeviceAttribute{
-		SerialNumber: flowmeter.SerialNumber,
-		Name:         "mainBatteryLevel",
-		Value:        mainBattery,
-	}
-
-	valveBattery := strconv.Itoa(flowmeter.ValveBatteryLevel)
-	valveBatteryDto := &models.DeviceAttribute{
-		SerialNumber: flowmeter.SerialNumber,
-		Name:         "valveBatteryLevel",
-		Value:        valveBattery,
-	}
-
-	deviceAttributes := []*models.DeviceAttribute{balanceDto, consumptionDto, batteryDto, valveBatteryDto}
-	if err := deviceAttributeRepository.SaveOrUpdateAll(deviceAttributes); err != nil {
-		log.Println("Failed to save device attributes ::::::: |", err)
-		log.Println("Device attributes ::::::: |")
-	}
-
-	log.Println("Device attributes created:", deviceAttributes)
-	if err := receiver.CompleteMessage(client.ctx, message, nil); err != nil {
-		log.Fatalln("Failed to complete message receive:", err)
-	}
-
-	log.Println("Message completed:", message.MessageID)
-}
-
-func (client *azureServiceBusClient) handleFlowbox(
-	receiver *azservicebus.Receiver,
-	message *azservicebus.ReceivedMessage,
-	flowbox *dtos.Flowbox,
-	deviceAttributeRepository repositories.DeviceAttributeRepository,
-) {
-	cardCount := strconv.Itoa(flowbox.CardCount)
-	cardCountDto := &models.DeviceAttribute{
-		SerialNumber: flowbox.GatewayID,
-		Name:         "cardCount",
-		Value:        cardCount,
-	}
-
-	transactionCount := strconv.Itoa(flowbox.TransactionCount)
-	transactionCountDto := &models.DeviceAttribute{
-		SerialNumber: flowbox.GatewayID,
-		Name:         "transactionCount",
-		Value:        transactionCount,
-	}
-
-	topUpCount := strconv.Itoa(flowbox.TopUpCount)
-	topUpCountDto := &models.DeviceAttribute{
-		SerialNumber: flowbox.GatewayID,
-		Name:         "topUpCount",
-		Value:        topUpCount,
-	}
-
-	deviceAttributes := []*models.DeviceAttribute{cardCountDto, transactionCountDto, topUpCountDto}
-	if err := deviceAttributeRepository.SaveOrUpdateAll(deviceAttributes); err != nil {
-		log.Println("Failed to save device attributes ::::::: |", err)
-	}
-
-	log.Println("Device attributes created:", deviceAttributes)
-	if err := receiver.CompleteMessage(client.ctx, message, nil); err != nil {
-		log.Fatalln("Failed to complete message receive:", err)
-	}
-
-	log.Println("Message completed:", message.MessageID)
 }
 
 func (client *azureServiceBusClient) SendMessage(topic, event string, data interface{}) error {
