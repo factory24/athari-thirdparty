@@ -15,7 +15,9 @@ type GatewayDTO struct {
 
 // DeviceDTO represents the data needed to create or update a device
 type DeviceDTO struct {
-	Eui         string
-	Name        string
-	Description string
+	Eui          string
+	Name         string
+	Description  string
+	ItemType     string
+	SerialNumber string
 }
