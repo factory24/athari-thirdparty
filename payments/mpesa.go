@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/factory24/athari-thirdparty/pkg/data/domains"
 
@@ -79,8 +80,8 @@ func (client *mpesaClient) Register(paymentMethod *domains.PaymentMethodDomain) 
 	payload := map[string]interface{}{
 		"ShortCode":       businessShortCode,
 		"ResponseType":    "Completed",
-		"ConfirmationURL": "https://api.1flow.org/v1/billing/webhooks/payment/confirmation",
-		"ValidationURL":   "https://api.1flow.org/v1/billing/webhooks/payment/validation",
+		"ConfirmationURL": os.Getenv("API.BASE_URL") + "/v1/billing/webhooks/payment/confirmation",
+		"ValidationURL":   os.Getenv("API.BASE_URL") + "/v1/billing/webhooks/payment/validation",
 	}
 	jsonBytes, err := json.Marshal(payload)
 	if err != nil {
