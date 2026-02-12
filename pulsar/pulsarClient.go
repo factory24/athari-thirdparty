@@ -35,6 +35,10 @@ type PulsarClient interface {
 	ListenOnTopics(topics []string, subscriptionName string, handler EventHandler) error
 	GetTopics() []string
 	Connect()
+	// ProcessDLQMessages reprocesses messages from DLQ to target topic
+	ProcessDLQMessages(dlqTopic, targetTopic string, maxMessages int) (int, error)
+	// GetOrCreateProducer returns a producer for a given topic
+	GetOrCreateProducer(topic string) (pulsar.Producer, error)
 }
 
 type pulsarClient struct {
@@ -251,7 +255,7 @@ func (p *pulsarClient) processMessage(msg pulsar.Message, handler EventHandler, 
 }
 
 func (p *pulsarClient) sendToDLQ(dlqTopic string, originalMsg pulsar.Message, reason, errorDetail string) error {
-	producer, err := p.getOrCreateProducer(dlqTopic)
+	producer, err := p.GetOrCreateProducer(dlqTopic)
 	if err != nil {
 		return fmt.Errorf("failed to get producer for DLQ topic %s: %w", dlqTopic, err)
 	}
@@ -281,7 +285,7 @@ func (p *pulsarClient) sendToDLQ(dlqTopic string, originalMsg pulsar.Message, re
 }
 
 func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error {
-	producer, err := p.getOrCreateProducer(topic)
+	producer, err := p.GetOrCreateProducer(topic)
 	if err != nil {
 		PulsarLogError("failed to get producer for topic %s: %v", topic, err.Error())
 		return fmt.Errorf("failed to get producer for topic %s: %w", topic, err)
@@ -317,7 +321,7 @@ func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error 
 		p.mu.Unlock()
 
 		time.Sleep(time.Second)                      // Delay before next retry
-		producer, err = p.getOrCreateProducer(topic) // Get a new producer for retry
+		producer, err = p.GetOrCreateProducer(topic) // Get a new producer for retry
 		if err != nil {
 			PulsarLogError("Failed to get producer for topic %s on retry (attempt %d/%d): %v", topic, i+1, maxPublishRetries+1, err.Error())
 			return fmt.Errorf("failed to get producer for topic %s on retry: %w", topic, err)
@@ -329,7 +333,7 @@ func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error 
 	return fmt.Errorf("all %d retries failed to publish event to topic %s: %w", maxPublishRetries+1, topic, err)
 }
 
-func (p *pulsarClient) getOrCreateProducer(topic string) (pulsar.Producer, error) {
+func (p *pulsarClient) GetOrCreateProducer(topic string) (pulsar.Producer, error) {
 	p.mu.RLock()
 	producer, found := p.producers[topic]
 	p.mu.RUnlock()
@@ -369,4 +373,98 @@ func (p *pulsarClient) getOrCreateProducer(topic string) (pulsar.Producer, error
 
 	p.producers[topic] = newProducer
 	return newProducer, nil
+}
+
+// ProcessDLQMessages consumes messages from the DLQ (dlqTopic) and republishes them to the original topic (targetTopic).
+// It processes up to maxMessages, or until the DLQ is empty (retrieving with a short timeout).
+// It returns the number of messages successfully reprocessed.
+func (p *pulsarClient) ProcessDLQMessages(dlqTopic, targetTopic string, maxMessages int) (int, error) {
+	// Create a reader or consumer for the DLQ. A Reader is often better for "replaying" or batch processing exact messages,
+	// but a Consumer is standard if we want to acknowledge them as we handle them.
+	// Using a Consumer with shared subscription to drain the DLQ.
+
+	serviceName := os.Getenv("APP.SERVICE.NAME")
+	if serviceName == "" {
+		return 0, fmt.Errorf("APP.SERVICE.NAME environment variable not set")
+	}
+	subscriptionName := fmt.Sprintf("%s-dlq-processor", serviceName)
+
+	channel := make(chan pulsar.ConsumerMessage, 100)
+	// dlqTopic string, originalMsg pulsar.Message, reason, errorDetail string
+	consumerOptions := pulsar.ConsumerOptions{
+		Topics:           []string{dlqTopic},
+		SubscriptionName: subscriptionName,
+		Type:             pulsar.Shared,
+		MessageChannel:   channel,
+		Decryption: &pulsar.MessageDecryptionInfo{
+			KeyReader:                   p.keyReader,
+			MessageCrypto:               nil,
+			ConsumerCryptoFailureAction: 1,
+		},
+	}
+
+	consumer, err := p.client.Subscribe(consumerOptions)
+	if err != nil {
+		return 0, fmt.Errorf("failed to subscribe to DLQ topic %s: %w", dlqTopic, err)
+	}
+	defer consumer.Close()
+
+	processedCount := 0
+
+	// We'll try to read up to maxMessages.
+	// Since we are using a channel, we can perform a loop with a timeout/select.
+	// But `Subscribe` runs asynchronously. We might want to just loop `maxMessages` times.
+
+	PulsarLogInfo("Starting processing of DLQ messages from %s to %s", dlqTopic, targetTopic)
+
+	for i := 0; i < maxMessages; i++ {
+		select {
+		case cm := <-channel:
+			msg := cm.Message
+			// Republish to target topic
+			// We might want to construct a new wrapper or just send the payload.
+			// The test implies we just want to move them back.
+
+			// Note: In a real scenario, you might check properties "dlq_reason" etc.
+			// Here we just blindly republish.
+
+			PulsarLogInfo("Reprocessing message %v from DLQ", msg.ID())
+
+			// Use PublishEvent if it's a standard event structure?
+			// PublishEvent assumes a payload structure and marshals it.
+			// The message payload is already bytes. We should probably use the low-level producer directly
+			// to preserve the payload exactly as is (it might be raw bytes if it failed parsing).
+
+			producer, err := p.GetOrCreateProducer(targetTopic)
+			if err != nil {
+				PulsarLogError("Failed to get producer for target topic %s: %v", targetTopic, err)
+				consumer.Nack(msg)
+				continue
+			}
+
+			// Forward the message
+			_, err = producer.Send(context.Background(), &pulsar.ProducerMessage{
+				Payload: msg.Payload(),
+				// Preserve original properties? Or add new ones?
+				// Let's copy properties but maybe update some timestamps if needed.
+				Properties: msg.Properties(),
+			})
+
+			if err != nil {
+				PulsarLogError("Failed to republish message %v: %v", msg.ID(), err)
+				consumer.Nack(msg)
+			} else {
+				PulsarLogSuccess("Republished message %v to %s", msg.ID(), targetTopic)
+				consumer.Ack(msg)
+				processedCount++
+			}
+
+		case <-time.After(5 * time.Second):
+			// Timeout if no messages are available in DLQ
+			PulsarLogInfo("Timeout waiting for DLQ messages (processed %d so far)", processedCount)
+			return processedCount, nil
+		}
+	}
+
+	return processedCount, nil
 }
