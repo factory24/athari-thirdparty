@@ -15,6 +15,7 @@ require (
 	github.com/infisical/go-sdk v0.5.92
 	github.com/jinzhu/copier v0.4.0
 	github.com/motemen/go-loghttp v0.0.0-20231107055348-29ae44b293f4
+	github.com/sirupsen/logrus v1.9.3
 	google.golang.org/grpc v1.71.0
 )
 
@@ -88,7 +89,6 @@ require (
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.52.0 // indirect
