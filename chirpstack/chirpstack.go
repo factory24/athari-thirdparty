@@ -12,10 +12,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-const (
-	DownLinkPort = 10
-)
-
 type APIToken string
 
 func (a APIToken) GetRequestMetadata(ctx context.Context, url ...string) (map[string]string, error) {
@@ -35,7 +31,9 @@ type NetworkServerClient interface {
 	Enqueue(context.Context, *api.EnqueueDeviceQueueItemRequest) (*api.EnqueueDeviceQueueItemResponse, error)
 	GetDevice(eui string) (*api.Device, error)
 	GetGateway(context.Context, string) (*api.Gateway, *time.Time, error)
+	GetKey(eui string) (string, error)
 	GetQueue(ctx context.Context, request *api.GetDeviceQueueItemsRequest) (*api.GetDeviceQueueItemsResponse, error)
+	IsActivated(eui string) (bool, error)
 	SetKey(eui, key string) error
 	UpdateDevice(dto dtos.DeviceDTO) error
 	UpdateGateway(dto dtos.GatewayDTO) error
@@ -227,6 +225,32 @@ func (client *chirpstackClient) SetKey(eui, key string) error {
 	}
 
 	return err
+}
+
+func (client *chirpstackClient) GetKey(eui string) (string, error) {
+
+	key, err := client.deviceClient.GetKeys(context.Background(), &api.GetDeviceKeysRequest{
+		DevEui: eui,
+	})
+	if err != nil {
+		return "", err
+	}
+	return key.DeviceKeys.GetAppKey(), err
+}
+
+func (client *chirpstackClient) IsActivated(eui string) (bool, error) {
+	deviceActivationResponse, err := client.deviceClient.GetActivation(context.Background(), &api.GetDeviceActivationRequest{
+		DevEui: eui,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	if deviceActivationResponse.DeviceActivation != nil && deviceActivationResponse.DeviceActivation.DevAddr != "" {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (client *chirpstackClient) Enqueue(
