@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/factory24/athari-thirdparty/common"
+	sysResponse "github.com/factory24/flow-system/pkg/response"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/apache/pulsar-client-go/pulsar/crypto"
@@ -24,7 +24,7 @@ const (
 	maxPublishRetries = 5
 )
 
-type EventHeader = common.EventHeader
+type EventHeader = sysResponse.EventHeader
 
 type EventHandler interface {
 	HandleEvent(header *EventHeader) error
@@ -229,7 +229,7 @@ func (p *pulsarClient) ListenOnTopics(topics []string, subscriptionName string, 
 }
 
 func (p *pulsarClient) processMessage(msg pulsar.Message, handler EventHandler, consumer pulsar.Consumer, dlqTopic string) {
-	header, err := common.ParseEventHeader(msg.Payload())
+	header, err := sysResponse.ParseEventHeader(msg.Payload())
 	if err != nil {
 		PulsarLogError("Failed to parse event header for message %v: %v", msg.ID(), err)
 		if dlqTopic != "" {
@@ -291,7 +291,7 @@ func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error 
 		return fmt.Errorf("failed to get producer for topic %s: %w", topic, err)
 	}
 
-	event := common.NewEvent(topic, eventType, payload)
+	event := sysResponse.NewEvent(topic, eventType, payload)
 	payloadBytes, err := event.Bytes()
 	if err != nil {
 		PulsarLogError("failed to marshal event: %w", err)
