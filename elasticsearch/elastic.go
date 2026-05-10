@@ -24,6 +24,7 @@ type ElasticSearchClient interface {
 	FieldSearchDocuments(indexName string, query map[string]interface{}) ([]interface{}, int64, error)
 	DeleteIndex(indexName string) error
 	AggregateDocuments(indexName string, aggregations map[string]interface{}, query map[string]interface{}) (*AggregationResults, error)
+	Bulk(indexName string, documents []interface{}) error
 }
 
 type elasticSearchClient struct {
@@ -49,34 +50,58 @@ func (service *elasticSearchClient) IndexMultipleDocuments(indexName string, dat
 		return fmt.Errorf("expected a slice, got %v", val.Kind())
 	}
 
-	// Iterate over the slice
+	documents := make([]interface{}, val.Len())
 	for i := 0; i < val.Len(); i++ {
-		item := val.Index(i).Interface()
+		documents[i] = val.Index(i).Interface()
+	}
 
-		// Convert the item to JSON
-		itemJSON, err := json.Marshal(item)
-		if err != nil {
-			return fmt.Errorf("failed to marshal item to JSON: %w", err)
+	return service.Bulk(indexName, documents)
+}
+
+func (service *elasticSearchClient) Bulk(indexName string, documents []interface{}) error {
+	if len(documents) == 0 {
+		return nil
+	}
+
+	var batch []string
+	for _, doc := range documents {
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index": indexName,
+			},
 		}
 
-		// Index the document in Elasticsearch
-		res, err := service.es.Index(
-			indexName,                           // Index name
-			strings.NewReader(string(itemJSON)), // Document body
-		)
-		if err != nil {
-			return fmt.Errorf("failed to index document in Elasticsearch: %w", err)
+		// If the document has an ID field (via reflection)
+		val := reflect.ValueOf(doc)
+		if val.Kind() == reflect.Ptr {
+			val = val.Elem()
 		}
-		defer res.Body.Close()
-
-		// Check for errors in the Elasticsearch response
-		if res.IsError() {
-			var e map[string]interface{}
-			if err := json.NewDecoder(res.Body).Decode(&e); err != nil {
-				return fmt.Errorf("failed to parse Elasticsearch error response: %w", err)
+		if val.Kind() == reflect.Struct {
+			idField := val.FieldByName("ID")
+			if idField.IsValid() && idField.Kind() == reflect.String && idField.String() != "" {
+				meta["index"].(map[string]interface{})["_id"] = idField.String()
 			}
-			return fmt.Errorf("Elasticsearch error: %s", e["error"].(map[string]interface{})["reason"])
 		}
+
+		metaJSON, _ := json.Marshal(meta)
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			log.Printf("failed to marshal document: %v", err)
+			continue
+		}
+
+		batch = append(batch, string(metaJSON), string(docJSON))
+	}
+
+	body := strings.Join(batch, "\n") + "\n"
+	res, err := service.es.Bulk(strings.NewReader(body), service.es.Bulk.WithIndex(indexName))
+	if err != nil {
+		return fmt.Errorf("bulk index request failed: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return fmt.Errorf("bulk index error: %s", res.String())
 	}
 
 	return nil

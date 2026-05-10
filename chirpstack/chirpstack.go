@@ -80,6 +80,7 @@ func (client *chirpstackClient) Connect() {
 
 	log.Println("connection to chirpstack server was successful")
 }
+
 func (client *chirpstackClient) GetDevice(eui string) (*api.Device, error) {
 	request := &api.GetDeviceRequest{
 		DevEui: eui,
