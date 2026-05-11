@@ -8,7 +8,7 @@ require (
 	github.com/chirpstack/chirpstack/api/go/v4 v4.16.2
 	github.com/elastic/go-elasticsearch/v8 v8.17.1
 	github.com/factory24/flow-system v0.1.3
-	github.com/getsentry/sentry-go v0.28.1
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/gofiber/fiber/v2 v2.52.11
 	github.com/iancoleman/strcase v0.3.0
 	github.com/infisical/go-sdk v0.5.92
