@@ -2,7 +2,6 @@ package sentryClient
 
 import (
 	"log"
-	"os"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -21,15 +20,25 @@ func (cfg *sentryClient) Connect() {
 
 	if err := sentry.Init(cfg.config); err != nil {
 		log.Println("sentry.Init", err)
-		os.Exit(3)
+	} else {
+		log.Println("sentry loaded successfully")
 	}
-	defer sentry.Flush(2 * time.Second)
-
-	log.Println("sentry loaded successfully")
 }
 
 func NewSentryClient(sentryConfig sentry.ClientOptions) SentryClient {
 	return &sentryClient{
 		config: sentryConfig,
 	}
+}
+
+func Flush(timeout time.Duration) {
+	sentry.Flush(timeout)
+}
+
+func CaptureException(err error) {
+	sentry.CaptureException(err)
+}
+
+func CaptureMessage(msg string) {
+	sentry.CaptureMessage(msg)
 }
