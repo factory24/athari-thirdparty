@@ -93,11 +93,16 @@ func (client *chirpstackClient) GetDevice(eui string) (*api.Device, error) {
 }
 
 func (client *chirpstackClient) CreateDevice(dto dtos.DeviceDTO) error {
+	description := dto.Description
+	if description == "" && dto.ItemType != "" && dto.SerialNumber != "" {
+		description = dto.ItemType + " " + dto.SerialNumber
+	}
+
 	request := &api.CreateDeviceRequest{
 		Device: &api.Device{
 			DevEui:          dto.Eui,
 			Name:            dto.Name,
-			Description:     dto.Description,
+			Description:     description,
 			ApplicationId:   os.Getenv("CS.APPLICATION_ID"),
 			DeviceProfileId: os.Getenv("CS.DEVICE_PROFILE_ID"),
 			SkipFcntCheck:   true,
@@ -114,7 +119,13 @@ func (client *chirpstackClient) CreateDevice(dto dtos.DeviceDTO) error {
 		return err
 	}
 
-	return err
+	if dto.Key != "" {
+		if err := client.SetKey(dto.Eui, dto.Key); err != nil {
+			log.Println("error setting device keys", err)
+		}
+	}
+
+	return nil
 }
 
 func (client *chirpstackClient) CreateGateway(dto dtos.GatewayDTO) error {
@@ -146,16 +157,24 @@ func (client *chirpstackClient) GetGateway(ctx context.Context, serialNumber str
 	}
 
 	log.Println("gateway", get)
-	asTime := get.GetLastSeenAt().AsTime()
+	var asTime time.Time
+	if get.GetLastSeenAt() != nil {
+		asTime = get.GetLastSeenAt().AsTime()
+	}
 	return get.GetGateway(), &asTime, nil
 }
 
 func (client *chirpstackClient) UpdateDevice(dto dtos.DeviceDTO) error {
+	description := dto.Description
+	if description == "" && dto.ItemType != "" && dto.SerialNumber != "" {
+		description = dto.ItemType + " " + dto.SerialNumber
+	}
+
 	request := &api.UpdateDeviceRequest{
 		Device: &api.Device{
 			DevEui:          dto.Eui,
 			Name:            dto.Name,
-			Description:     dto.Description,
+			Description:     description,
 			ApplicationId:   os.Getenv("CS.APPLICATION_ID"),
 			DeviceProfileId: os.Getenv("CS.DEVICE_PROFILE_ID"),
 			SkipFcntCheck:   true,
@@ -169,6 +188,12 @@ func (client *chirpstackClient) UpdateDevice(dto dtos.DeviceDTO) error {
 	if err != nil {
 		log.Println("error updating device", err)
 		return err
+	}
+
+	if dto.Key != "" {
+		if err := client.SetKey(dto.Eui, dto.Key); err != nil {
+			log.Println("error updating device keys", err)
+		}
 	}
 	return nil
 }

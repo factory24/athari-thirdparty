@@ -20,4 +20,6 @@ type DeviceDTO struct {
 	Description  string
 	ItemType     string
 	SerialNumber string
+	Location     *common.Location
+	Key          string
 }
