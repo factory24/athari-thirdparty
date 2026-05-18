@@ -10,6 +10,11 @@ import (
 	"github.com/chirpstack/chirpstack/api/go/v4/api"
 	"github.com/factory24/athari-thirdparty/pkg/data/dtos"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
+)
+
+const (
+	DownLinkPort = 10
 )
 
 type APIToken string
@@ -29,6 +34,7 @@ type NetworkServerClient interface {
 	CreateDevice(dto dtos.DeviceDTO) error
 	CreateGateway(dto dtos.GatewayDTO) error
 	Enqueue(context.Context, *api.EnqueueDeviceQueueItemRequest) (*api.EnqueueDeviceQueueItemResponse, error)
+	FlushQueue(ctx context.Context, devEui string) (*emptypb.Empty, error)
 	GetDevice(eui string) (*api.Device, error)
 	GetGateway(context.Context, string) (*api.Gateway, *time.Time, error)
 	GetKey(eui string) (string, error)
@@ -291,6 +297,17 @@ func (client *chirpstackClient) Enqueue(
 	log.Println("Response :::::: |", response.String())
 
 	return response, nil
+}
+
+func (client *chirpstackClient) FlushQueue(ctx context.Context, devEui string) (*emptypb.Empty, error) {
+	_, err := client.deviceClient.FlushQueue(ctx, &api.FlushDeviceQueueRequest{
+		DevEui: devEui,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
 }
 
 func NewChirpstackClient() NetworkServerClient {

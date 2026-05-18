@@ -7,7 +7,7 @@ require (
 	github.com/apache/pulsar-client-go v0.15.1
 	github.com/chirpstack/chirpstack/api/go/v4 v4.16.2
 	github.com/elastic/go-elasticsearch/v8 v8.17.1
-	github.com/factory24/flow-system v0.2.0
+	github.com/factory24/flow-system v0.5.1
 	github.com/getsentry/sentry-go v0.46.2
 	github.com/gofiber/fiber/v2 v2.52.11
 	github.com/iancoleman/strcase v0.3.0
@@ -30,6 +30,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
 	github.com/Azure/go-amqp v1.4.0 // indirect
 	github.com/DataDog/zstd v1.5.0 // indirect
+	github.com/OneSignal/onesignal-go-api v1.0.4 // indirect
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/ardielle/ardielle-go v1.5.2 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.36.3 // indirect
