@@ -11,8 +11,8 @@ import (
 
 	"github.com/factory24/athari-thirdparty/pkg/data/domains"
 	"github.com/factory24/athari-thirdparty/pkg/data/dtos"
-	"github.com/gofiber/fiber/v2"
 	"github.com/jinzhu/copier"
+	"github.com/labstack/echo/v4"
 	"github.com/motemen/go-loghttp"
 )
 
@@ -21,21 +21,22 @@ const (
 )
 
 type PaystackClient interface {
-	CreateSubAccount(*fiber.Ctx, *domains.PaymentMethodDomain, *dtos.SubAccountDto) (*domains.PaystackSubAccountDomain, error)
-	DeleteSubAccount(*fiber.Ctx, *domains.PaymentMethodDomain, string) (*domains.PaystackSubAccountDomain, error)
-	GetBanks(*fiber.Ctx, *domains.PaymentMethodDomain, *domains.SettingDomain) ([]*domains.BankDomain, error)
-	GetBranches(*fiber.Ctx, *domains.PaymentMethodDomain, string, string) ([]*domains.BranchDomain, error)
-	GetSubAccount(*fiber.Ctx, *domains.PaymentMethodDomain, string) (*domains.PaystackSubAccountDomain, error)
-	ListSubAccounts(*fiber.Ctx, *domains.PaymentMethodDomain) ([]*domains.PaystackSubAccountDomain, error)
-	ResolveAccount(*fiber.Ctx, *domains.PaymentMethodDomain, *dtos.PaystackAccountResolvedInformationDto) (*domains.PaystackAccountResolvedInformation, error)
-	UpdateSubAccount(*fiber.Ctx, *domains.PaymentMethodDomain, string, *dtos.PaystackSubAccountDto) (*domains.PaystackSubAccountDomain, error)
+	CreateSubAccount(echo.Context, *domains.PaymentMethodDomain, *dtos.SubAccountDto) (*domains.PaystackSubAccountDomain, error)
+	DeleteSubAccount(echo.Context, *domains.PaymentMethodDomain, string) (*domains.PaystackSubAccountDomain, error)
+	GetBanks(echo.Context, *domains.PaymentMethodDomain, *domains.SettingDomain) ([]*domains.BankDomain, error)
+	GetBranches(echo.Context, *domains.PaymentMethodDomain, string, string) ([]*domains.BranchDomain, error)
+	GetSubAccount(echo.Context, *domains.PaymentMethodDomain, string) (*domains.PaystackSubAccountDomain, error)
+	ListSubAccounts(echo.Context, *domains.PaymentMethodDomain) ([]*domains.PaystackSubAccountDomain, error)
+	ResolveAccount(echo.Context, *domains.PaymentMethodDomain, *dtos.PaystackAccountResolvedInformationDto) (*domains.PaystackAccountResolvedInformation, error)
+	UpdateSubAccount(echo.Context, *domains.PaymentMethodDomain, string, *dtos.PaystackSubAccountDto) (*domains.PaystackSubAccountDomain, error)
+	GetSettlements(echo.Context, *domains.PaymentMethodDomain) (*domains.PagedResult, error)
 }
 
 type paystackClient struct {
 	http *http.Client
 }
 
-func (client paystackClient) UpdateSubAccount(ctx *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain, s string, dto *dtos.PaystackSubAccountDto) (*domains.PaystackSubAccountDomain, error) {
+func (client paystackClient) UpdateSubAccount(ctx echo.Context, paymentMethod *domains.PaymentMethodDomain, s string, dto *dtos.PaystackSubAccountDto) (*domains.PaystackSubAccountDomain, error) {
 	jb, err := json.Marshal(dto)
 	if err != nil {
 		return nil, err
@@ -81,7 +82,7 @@ func (client paystackClient) UpdateSubAccount(ctx *fiber.Ctx, paymentMethod *dom
 	return accountDomain.Data, nil
 }
 
-func (client paystackClient) DeleteSubAccount(_ *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain, s string) (*domains.PaystackSubAccountDomain, error) {
+func (client paystackClient) DeleteSubAccount(_ echo.Context, paymentMethod *domains.PaymentMethodDomain, s string) (*domains.PaystackSubAccountDomain, error) {
 	bankAccountUrl := fmt.Sprintf("%s/subaccount", paystackBaseUrl)
 	resolveAccountUrl, err := url.Parse(bankAccountUrl)
 	if err != nil {
@@ -126,7 +127,7 @@ func (client paystackClient) DeleteSubAccount(_ *fiber.Ctx, paymentMethod *domai
 	return d.Data, nil
 }
 
-func (client paystackClient) ResolveAccount(_ *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain, dto *dtos.PaystackAccountResolvedInformationDto) (*domains.PaystackAccountResolvedInformation, error) {
+func (client paystackClient) ResolveAccount(_ echo.Context, paymentMethod *domains.PaymentMethodDomain, dto *dtos.PaystackAccountResolvedInformationDto) (*domains.PaystackAccountResolvedInformation, error) {
 	resolveUrl := fmt.Sprintf("%s/bank/resolve", paystackBaseUrl)
 	resolveAccountUrl, err := url.Parse(resolveUrl)
 	if err != nil {
@@ -177,7 +178,7 @@ func (client paystackClient) ResolveAccount(_ *fiber.Ctx, paymentMethod *domains
 	return d.Data, nil
 }
 
-func (client paystackClient) ListSubAccounts(_ *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain) ([]*domains.PaystackSubAccountDomain, error) {
+func (client paystackClient) ListSubAccounts(_ echo.Context, paymentMethod *domains.PaymentMethodDomain) ([]*domains.PaystackSubAccountDomain, error) {
 	subaccountUrl := fmt.Sprintf("%s/subaccount", paystackBaseUrl)
 	request, err := http.NewRequest(http.MethodGet, subaccountUrl, nil)
 	if err != nil {
@@ -208,7 +209,7 @@ func (client paystackClient) ListSubAccounts(_ *fiber.Ctx, paymentMethod *domain
 	return d.Data, nil
 }
 
-func (client paystackClient) GetSubAccount(_ *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain, s string) (*domains.PaystackSubAccountDomain, error) {
+func (client paystackClient) GetSubAccount(_ echo.Context, paymentMethod *domains.PaymentMethodDomain, s string) (*domains.PaystackSubAccountDomain, error) {
 	subaccountUrl := fmt.Sprintf("%s/subaccount/%s", paystackBaseUrl, s)
 	request, err := http.NewRequest(http.MethodGet, subaccountUrl, nil)
 	if err != nil {
@@ -239,7 +240,7 @@ func (client paystackClient) GetSubAccount(_ *fiber.Ctx, paymentMethod *domains.
 	return d.Data, nil
 }
 
-func (client paystackClient) CreateSubAccount(_ *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain, dto *dtos.SubAccountDto) (*domains.PaystackSubAccountDomain, error) {
+func (client paystackClient) CreateSubAccount(_ echo.Context, paymentMethod *domains.PaymentMethodDomain, dto *dtos.SubAccountDto) (*domains.PaystackSubAccountDomain, error) {
 	d := new(dtos.PaystackSubAccountDto)
 	if err := copier.Copy(d, dto); err != nil {
 		return nil, err
@@ -290,7 +291,7 @@ func (client paystackClient) CreateSubAccount(_ *fiber.Ctx, paymentMethod *domai
 	return accountDomain.Data, nil
 }
 
-func (client paystackClient) GetBanks(ctx *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain, settingDomain *domains.SettingDomain) ([]*domains.BankDomain, error) {
+func (client paystackClient) GetBanks(ctx echo.Context, paymentMethod *domains.PaymentMethodDomain, settingDomain *domains.SettingDomain) ([]*domains.BankDomain, error) {
 	bankUrl := fmt.Sprintf("%s/bank", paystackBaseUrl)
 	paystackBankUrl, err := url.Parse(bankUrl)
 	if err != nil {
@@ -302,15 +303,17 @@ func (client paystackClient) GetBanks(ctx *fiber.Ctx, paymentMethod *domains.Pay
 		return nil, err
 	}
 
-	queries := ctx.Queries()
-	if _, ok := queries["currency"]; !ok {
+	queries := ctx.QueryParams()
+	if queries.Get("currency") == "" {
 		log.Printf("Currency value not passed through query param, using setting value = %s\n", settingDomain.Value)
-		queries["currency"] = settingDomain.Value
+		queries.Set("currency", settingDomain.Value)
 	}
 
 	q := paystackBankUrl.Query()
-	for key, value := range queries {
-		q.Add(key, value)
+	for k, v := range queries {
+		for _, val := range v {
+			q.Add(k, val)
+		}
 	}
 	request.URL.RawQuery = q.Encode()
 
@@ -341,7 +344,7 @@ func (client paystackClient) GetBanks(ctx *fiber.Ctx, paymentMethod *domains.Pay
 	return apiResponse.Data, nil
 }
 
-func (client paystackClient) GetBranches(_ *fiber.Ctx, paymentMethod *domains.PaymentMethodDomain, bank string, currency string) ([]*domains.BranchDomain, error) {
+func (client paystackClient) GetBranches(_ echo.Context, paymentMethod *domains.PaymentMethodDomain, bank string, currency string) ([]*domains.BranchDomain, error) {
 	branchUrl := fmt.Sprintf("%s/bank/branches?currency=%s&bank=%s", paystackBaseUrl, currency, bank)
 	request, err := http.NewRequest(http.MethodGet, branchUrl, nil)
 	if err != nil {
@@ -369,6 +372,74 @@ func (client paystackClient) GetBranches(_ *fiber.Ctx, paymentMethod *domains.Pa
 	}
 
 	return apiResponse.Data, nil
+}
+
+func (client paystackClient) GetSettlements(ctx echo.Context, paymentMethod *domains.PaymentMethodDomain) (*domains.PagedResult, error) {
+	settlementUrl := fmt.Sprintf("%s/settlement", paystackBaseUrl)
+	req, err := http.NewRequest(http.MethodGet, settlementUrl, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	q := req.URL.Query()
+	if page := ctx.QueryParam("page"); page != "" {
+		q.Add("page", page)
+	}
+	if perPage := ctx.QueryParam("perPage"); perPage != "" {
+		q.Add("perPage", perPage)
+	}
+	if from := ctx.QueryParam("from"); from != "" {
+		q.Add("from", from)
+	}
+	if to := ctx.QueryParam("to"); to != "" {
+		q.Add("to", to)
+	}
+	if subaccount := ctx.QueryParam("subaccount"); subaccount != "" {
+		q.Add("subaccount", subaccount)
+	}
+	if status := ctx.QueryParam("status"); status != "" {
+		q.Add("status", status)
+	}
+	req.URL.RawQuery = q.Encode()
+
+	secretKeyValue, err := paymentMethod.GetRequiredConfiguration("secretKey")
+	if err != nil {
+		return nil, err
+	}
+
+	if secretKeyValue.Value == "" {
+		return nil, errors.New("unable to get paystack secret key")
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", secretKeyValue.Value))
+
+	response, err := client.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	d := new(domains.PaystackResponse[[]*domains.SettlementDomain])
+	if err := json.NewDecoder(response.Body).Decode(d); err != nil {
+		return nil, err
+	}
+
+	if !d.Status {
+		return nil, errors.New(d.Message)
+	}
+
+	pagedResult := &domains.PagedResult{
+		Items: d.Data,
+	}
+
+	if d.Meta != nil {
+		pagedResult.Total = int64(d.Meta.Total)
+		pagedResult.Page = int64(d.Meta.Page)
+		pagedResult.Size = int64(d.Meta.PerPage)
+		pagedResult.TotalPages = int64(d.Meta.PageCount)
+	}
+
+	return pagedResult, nil
 }
 
 func NewPaystackClient() PaystackClient {

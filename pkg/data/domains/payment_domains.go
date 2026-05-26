@@ -10,6 +10,37 @@ type PaystackResponse[T any] struct {
 	Status  bool   `json:"status,omitempty"`
 	Message string `json:"message,omitempty"`
 	Data    T      `json:"data,omitempty"`
+	Meta    *Meta  `json:"meta,omitempty"`
+}
+
+type Meta struct {
+	Total     int `json:"total"`
+	Skipped   int `json:"skipped"`
+	PerPage   int `json:"perPage"`
+	Page      int `json:"page"`
+	PageCount int `json:"pageCount"`
+}
+
+type SettlementDomain struct {
+	ID             int64      `json:"id"`
+	Amount         int64      `json:"amount"`
+	SettlementDate *time.Time `json:"settlement_date"`
+	Status         string     `json:"status"`
+	Currency       string     `json:"currency"`
+}
+
+type PagedResult struct {
+	Items        interface{} `json:"content"`
+	Page         int64       `json:"number"`
+	Size         int64       `json:"size"`
+	MaxPage      int64       `json:"maxPage"`
+	TotalPages   int64       `json:"totalPages"`
+	Total        int64       `json:"totalElements"`
+	Last         bool        `json:"last"`
+	First        bool        `json:"first"`
+	Visible      int64       `json:"visible"`
+	Name         string      `json:"name"`
+	SerialNumber string      `json:"serialNumber"`
 }
 
 type BankDomain struct {
