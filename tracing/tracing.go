@@ -16,12 +16,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TracingConfig points at the Jaeger OTLP collector deployed by
-// Grundfos.Flow.V1.DevOps/core/jaeger. In-cluster default is the
-// all-in-one service on port 4317 (gRPC).
+// TracingConfig points at the OTel Collector deployed by
+// Grundfos.Flow.V1.DevOps/core/jaeger. Spans flow through otel-collector
+// (which derives RED metrics for the Jaeger Monitor/SPM tab via the
+// spanmetrics connector) and are then forwarded to jaeger-collector for
+// storage. Override via OTEL_EXPORTER_OTLP_ENDPOINT env var.
 type TracingConfig struct {
 	ServiceName string
-	Endpoint    string // e.g. "jaeger-all-in-one.observability.svc.cluster.local:4317"
+	Endpoint    string // e.g. "otel-collector.observability.svc.cluster.local:4317"
 	Insecure    bool
 }
 
@@ -35,7 +37,7 @@ type tracingClient struct {
 
 func NewTracingClient(cfg TracingConfig) TracingClient {
 	if cfg.Endpoint == "" {
-		cfg.Endpoint = "jaeger-all-in-one.observability.svc.cluster.local:4317"
+		cfg.Endpoint = "otel-collector.observability.svc.cluster.local:4317"
 	}
 	return &tracingClient{config: cfg}
 }
