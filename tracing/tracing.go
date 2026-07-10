@@ -2,14 +2,18 @@ package tracingClient
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -42,22 +46,13 @@ func NewTracingClient(cfg TracingConfig) TracingClient {
 	return &tracingClient{config: cfg}
 }
 
-// Connect wires up the global OTel TracerProvider with an OTLP/gRPC
-// exporter pointed at Jaeger, and returns a shutdown func to flush on exit.
+// Connect wires up the global OTel TracerProvider and MeterProvider with
+// OTLP/gRPC exporters pointed at the shared otel-collector, starts emitting
+// Go runtime metrics (goroutines, GC, memory — zero code changes needed in
+// callers), and returns a shutdown func to flush both on exit.
 func (c *tracingClient) Connect() func(context.Context) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(c.config.Endpoint)}
-	if c.config.Insecure {
-		opts = append(opts, otlptracegrpc.WithInsecure())
-	}
-
-	exporter, err := otlptracegrpc.New(ctx, opts...)
-	if err != nil {
-		log.Println("tracing: failed to connect to Jaeger OTLP endpoint", err)
-		return func(context.Context) error { return nil }
-	}
 
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
@@ -69,8 +64,21 @@ func (c *tracingClient) Connect() func(context.Context) error {
 		res = resource.Default()
 	}
 
+	traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(c.config.Endpoint)}
+	metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(c.config.Endpoint)}
+	if c.config.Insecure {
+		traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+		metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+	}
+
+	traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
+	if err != nil {
+		log.Println("tracing: failed to connect trace exporter to OTLP endpoint", err)
+		return func(context.Context) error { return nil }
+	}
+
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
@@ -79,8 +87,35 @@ func (c *tracingClient) Connect() func(context.Context) error {
 		propagation.Baggage{},
 	))
 
-	log.Println("tracing: connected to Jaeger at", c.config.Endpoint)
-	return tp.Shutdown
+	shutdownFuncs := []func(context.Context) error{tp.Shutdown}
+
+	metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
+	if err != nil {
+		// Non-fatal: traces still work without metrics.
+		log.Println("tracing: failed to connect metric exporter to OTLP endpoint", err)
+	} else {
+		mp := metric.NewMeterProvider(
+			metric.WithReader(metric.NewPeriodicReader(metricExporter)),
+			metric.WithResource(res),
+		)
+		otel.SetMeterProvider(mp)
+		shutdownFuncs = append(shutdownFuncs, mp.Shutdown)
+
+		if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
+			log.Println("tracing: failed to start Go runtime metrics", err)
+		}
+	}
+
+	log.Println("tracing: connected to otel-collector at", c.config.Endpoint)
+	return func(ctx context.Context) error {
+		var errs []error
+		for _, fn := range shutdownFuncs {
+			if err := fn(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}
 }
 
 // EchoMiddleware starts a span per inbound request, propagates trace context
