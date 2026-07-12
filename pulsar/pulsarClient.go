@@ -18,7 +18,20 @@ import (
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/apache/pulsar-client-go/pulsar/crypto"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// tracer uses whatever TracerProvider athari-thirdparty/tracing.Connect()
+// already registered globally in this service — no separate wiring needed
+// per caller. Messaging semantic conventions (messaging.system,
+// messaging.destination.name, messaging.operation) are what power SigNoz's
+// (and Jaeger's) "Messaging Queues" view; without them a queue is
+// functionally invisible there even though traces/spans exist elsewhere.
+var tracer = otel.Tracer("pulsar")
 
 const (
 	maxPublishRetries = 5
@@ -229,9 +242,33 @@ func (p *pulsarClient) ListenOnTopics(topics []string, subscriptionName string, 
 }
 
 func (p *pulsarClient) processMessage(msg pulsar.Message, handler EventHandler, consumer pulsar.Consumer, dlqTopic string) {
+	// Join the producer's trace (see PublishEvent) via the properties it was
+	// injected into, rather than starting an unrelated one — properties are
+	// Pulsar's closest equivalent to HTTP headers for propagation, since it
+	// has no native trace-context field.
+	carrier := propagation.MapCarrier(msg.Properties())
+	parentCtx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+
+	// EventHandler.HandleEvent takes no context.Context (interface change
+	// would ripple across every handler in every service), so this span
+	// can't be threaded further into the handler — it still captures the
+	// message-processing duration/outcome itself, linked to the producer.
+	_, span := tracer.Start(parentCtx, msg.Topic()+" process",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "pulsar"),
+			attribute.String("messaging.destination.name", msg.Topic()),
+			attribute.String("messaging.operation", "process"),
+			attribute.String("messaging.message.id", msg.ID().String()),
+		),
+	)
+	defer span.End()
+
 	header, err := sysResponse.ParseEventHeader(msg.Payload())
 	if err != nil {
 		PulsarLogError("Failed to parse event header for message %v: %v", msg.ID(), err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "unparseable payload")
 		if dlqTopic != "" {
 			PulsarLogError("Sending unparseable message %v to DLQ topic: %s", msg.ID(), dlqTopic)
 			if dlqErr := p.sendToDLQ(dlqTopic, msg, "unparseable_payload", err.Error()); dlqErr != nil {
@@ -244,9 +281,13 @@ func (p *pulsarClient) processMessage(msg pulsar.Message, handler EventHandler, 
 		return
 	}
 
+	span.SetAttributes(attribute.String("messaging.pulsar.event_type", header.EventType))
+
 	header.PrettyLog()
 	if err := handler.HandleEvent(header); err != nil {
 		PulsarLogError("Handler failed to process event '%s' (ID: %v): %v. Nacking message.", header.EventType, msg.ID(), err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		consumer.Nack(msg)
 	} else {
 		PulsarLogSuccess("Successfully processed event '%s' (ID: %v)", header.EventType, msg.ID())
@@ -284,10 +325,31 @@ func (p *pulsarClient) sendToDLQ(dlqTopic string, originalMsg pulsar.Message, re
 	return nil
 }
 
+// PublishEvent has no context.Context parameter (a signature change would
+// touch every call site across every service), so this span can't link back
+// to whatever caller/HTTP-handler span triggered the publish — it starts a
+// new trace rooted at the publish itself. It still gives the consumer side
+// something to link to (trace context is injected into message properties
+// below), and gives SigNoz/Jaeger's Messaging Queues view real publish
+// spans with proper messaging.* attributes, which is what was missing
+// entirely before this.
 func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error {
+	ctx, span := tracer.Start(context.Background(), topic+" send",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "pulsar"),
+			attribute.String("messaging.destination.name", topic),
+			attribute.String("messaging.operation", "publish"),
+			attribute.String("messaging.pulsar.event_type", eventType),
+		),
+	)
+	defer span.End()
+
 	producer, err := p.GetOrCreateProducer(topic)
 	if err != nil {
 		PulsarLogError("failed to get producer for topic %s: %v", topic, err.Error())
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to get producer for topic %s: %w", topic, err)
 	}
 
@@ -295,12 +357,21 @@ func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error 
 	payloadBytes, err := event.Bytes()
 	if err != nil {
 		PulsarLogError("failed to marshal event: %w", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
+	// Carries this span's context to the consumer via message properties —
+	// Pulsar has no native trace-context header, so properties are the
+	// closest equivalent to how OTel HTTP propagation uses headers.
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
 	for i := 0; i <= maxPublishRetries; i++ {
-		_, err = producer.Send(context.Background(), &pulsar.ProducerMessage{
-			Payload: payloadBytes,
+		_, err = producer.Send(ctx, &pulsar.ProducerMessage{
+			Payload:    payloadBytes,
+			Properties: carrier,
 		})
 		if err == nil {
 			PulsarLogInfo("Published event '%s' to topic '%s'", eventType, topic)
@@ -324,12 +395,16 @@ func (p *pulsarClient) PublishEvent(topic, eventType string, payload any) error 
 		producer, err = p.GetOrCreateProducer(topic) // Get a new producer for retry
 		if err != nil {
 			PulsarLogError("Failed to get producer for topic %s on retry (attempt %d/%d): %v", topic, i+1, maxPublishRetries+1, err.Error())
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("failed to get producer for topic %s on retry: %w", topic, err)
 		}
 	}
 
 	// If we reach here, all retries failed
 	PulsarLogError("All %d retries failed for event to topic %s: %w", maxPublishRetries+1, topic, err)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 	return fmt.Errorf("all %d retries failed to publish event to topic %s: %w", maxPublishRetries+1, topic, err)
 }
 
