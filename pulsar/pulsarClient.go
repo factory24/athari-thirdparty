@@ -35,6 +35,9 @@ var tracer = otel.Tracer("pulsar")
 
 const (
 	maxPublishRetries = 5
+	// Retries for the producer *name*, not the connection: a name the broker
+	// has not released yet is retried under a fresh name.
+	maxProducerNameRetries = 3
 )
 
 type EventHeader = sysResponse.EventHeader
@@ -193,8 +196,11 @@ func (p *pulsarClient) ListenOnTopics(topics []string, subscriptionName string, 
 
 		channel := make(chan pulsar.ConsumerMessage, 2000)
 
+		// One consumer per topic: the DLQ policy below is derived per-topic, and
+		// passing the full list here gave every consumer every topic (N consumers
+		// x N topics x 1000-message default prefetch).
 		consumerOptions := pulsar.ConsumerOptions{
-			Topics:           topics,
+			Topics:           []string{topic},
 			SubscriptionName: subscriptionName,
 			Type:             pulsar.Shared,
 			Name:             consumerName,
@@ -427,27 +433,74 @@ func (p *pulsarClient) GetOrCreateProducer(topic string) (pulsar.Producer, error
 		return nil, fmt.Errorf("APP.SERVICE.NAME environment variable not set")
 	}
 
-	rand.Seed(time.Now().UnixNano())
-	producerName := fmt.Sprintf("%s-producer-%02d", serviceName, rand.Intn(100))
-	PulsarLogSuccess("Producer name ::::: %s", producerName)
+	// Pulsar treats an explicit producer name as an exclusive lease on the
+	// topic: a second producer claiming the same name is rejected with
+	// ProducerBusy. A name of service+rand(100) collided across pods and
+	// across restarts (the broker still holds the old lease), which surfaced
+	// as publish failures in callers. Bind the name to this process, and if
+	// the broker still refuses it, fall back to a fresh unique name.
+	var newProducer pulsar.Producer
+	var err error
+	for attempt := 0; attempt <= maxProducerNameRetries; attempt++ {
+		producerName := producerName(serviceName, attempt)
+		PulsarLogInfo("Creating new producer for topic: %s with name: %s", topic, producerName)
 
-	PulsarLogInfo("Creating new producer for topic: %s with name: %s", topic, producerName)
-	newProducer, err := p.client.CreateProducer(pulsar.ProducerOptions{
-		Topic:           topic,
-		DisableBatching: false,
-		Name:            producerName,
-		Encryption: &pulsar.ProducerEncryptionInfo{
-			KeyReader: p.keyReader,
-			Keys:      p.encKeys,
-		},
-		SendTimeout: 30 * time.Second,
-	})
-	if err != nil {
-		return nil, err
+		newProducer, err = p.client.CreateProducer(pulsar.ProducerOptions{
+			Topic:           topic,
+			DisableBatching: false,
+			Name:            producerName,
+			Encryption: &pulsar.ProducerEncryptionInfo{
+				KeyReader: p.keyReader,
+				Keys:      p.encKeys,
+			},
+			SendTimeout: 30 * time.Second,
+		})
+		if err == nil {
+			PulsarLogSuccess("Producer name ::::: %s", producerName)
+			p.producers[topic] = newProducer
+			return newProducer, nil
+		}
+
+		if !isProducerNameTaken(err) {
+			return nil, err
+		}
+
+		PulsarLogError("Producer name %s is already connected to topic %s, retrying with a new name: %v",
+			producerName, topic, err)
 	}
 
-	p.producers[topic] = newProducer
-	return newProducer, nil
+	return nil, err
+}
+
+// producerName is stable per process on the first attempt so that a producer
+// keeps one identity in broker stats and traces; later attempts add entropy to
+// break a lease the broker has not released yet.
+func producerName(serviceName string, attempt int) string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	// Pod names already carry a random suffix; keep the tail so the name stays
+	// readable and within Pulsar's limits.
+	if len(host) > 24 {
+		host = host[len(host)-24:]
+	}
+
+	base := fmt.Sprintf("%s-producer-%s-%d", serviceName, host, os.Getpid())
+	if attempt == 0 {
+		return base
+	}
+
+	return fmt.Sprintf("%s-%d", base, rand.Int63())
+}
+
+func isProducerNameTaken(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "producerbusy") || strings.Contains(msg, "already connected to topic")
 }
 
 // ProcessDLQMessages consumes messages from the DLQ (dlqTopic) and republishes them to the original topic (targetTopic).

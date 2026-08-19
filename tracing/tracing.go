@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -19,6 +21,25 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// samplerFromEnv defaults to sampling 10% of traces. The TracerProvider had
+// no sampler set at all before (AlwaysSample by default), and the GORM OTel
+// plugin traces every DB query as its own span — once that landed platform-
+// wide, every service started sending far more spans than the shared
+// otel-collector can absorb, which trips its memory_limiter processor and
+// starts rejecting data ("data refused due to high memory usage", visible in
+// every service's logs). ParentBased so a trace that a caller already
+// decided to sample stays fully sampled end-to-end. Override with
+// OTEL_TRACES_SAMPLE_RATIO (0.0–1.0) per service if needed.
+func samplerFromEnv() sdktrace.Sampler {
+	ratio := 0.1
+	if v := os.Getenv("OTEL_TRACES_SAMPLE_RATIO"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil && parsed >= 0 && parsed <= 1 {
+			ratio = parsed
+		}
+	}
+	return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+}
 
 // TracingConfig points at the OTel Collector deployed by
 // Grundfos.Flow.V1.DevOps/core/jaeger. Spans flow through otel-collector
@@ -80,6 +101,7 @@ func (c *tracingClient) Connect() func(context.Context) error {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(samplerFromEnv()),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
