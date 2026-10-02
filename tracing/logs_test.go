@@ -70,3 +70,20 @@ func TestSeverityOf(t *testing.T) {
 		}
 	}
 }
+
+func TestPulsarFilterDropsChatterAndEventDumpsButKeepsTheRest(t *testing.T) {
+	s, rec := newTestShipper()
+	f := &pulsarFilter{next: s.writer("stderr")}
+	f.Write([]byte("2026/10/02 11:08:54 \x1b[36m[Pulsar] Published event 'x' to topic 'y'\x1b[0m\n"))
+	f.Write([]byte("2026/10/02 11:08:54 ============================== Consumer ===============================\n"))
+	f.Write([]byte("2026/10/02 11:08:54 EventType: water_credit.budget.index\n"))
+	f.Write([]byte("2026/10/02 11:08:54 Payload:\n{\n  \"phoneNumber\": \"+233000000000\"\n}\n"))
+	f.Write([]byte("2026/10/02 11:08:54 Pulsar Handler: Received event 'a' from topic 'b'\n"))
+	f.Write([]byte("2026/10/02 11:08:55 Error fetching meter balance for 68753500111394\n"))
+	if len(rec.records) != 1 {
+		t.Fatalf("expected only the service's own line to be shipped, got %d records", len(rec.records))
+	}
+	if got := rec.records[0].Body().AsString(); got != "2026/10/02 11:08:55 Error fetching meter balance for 68753500111394" {
+		t.Fatalf("unexpected record %q", got)
+	}
+}

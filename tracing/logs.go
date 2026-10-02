@@ -52,7 +52,11 @@ func startLogShipping(ctx context.Context, cfg TracingConfig, res *resource.Reso
 	global.SetLoggerProvider(lp)
 
 	shipper := &lineShipper{logger: lp.Logger("github.com/factory24/athari-thirdparty/tracing")}
-	log.SetOutput(io.MultiWriter(log.Writer(), shipper.writer("stderr")))
+	stderr := shipper.writer("stderr")
+	if !strings.EqualFold(os.Getenv("OTEL_LOGS_PULSAR"), "true") {
+		stderr = &pulsarFilter{next: stderr}
+	}
+	log.SetOutput(io.MultiWriter(log.Writer(), stderr))
 	teeStdout(shipper)
 	return lp.Shutdown
 }
@@ -161,4 +165,35 @@ func levelSeverity(level string) (otellog.Severity, string) {
 		return otellog.SeverityFatal, "FATAL"
 	}
 	return otellog.SeverityInfo, "INFO"
+}
+
+// logTimestamp matches the standard log package's "2006/01/02 15:04:05 " prefix.
+var logTimestamp = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(\.\d+)? `)
+
+// pulsarFilter drops the Pulsar client's chatter and the per-message event dumps before they are
+// shipped (they stay in the container log). It judges each write call whole, because one
+// log.Printf of an event payload spans many lines. Ship them anyway with OTEL_LOGS_PULSAR=true.
+type pulsarFilter struct {
+	next io.Writer
+}
+
+func (f *pulsarFilter) Write(p []byte) (int, error) {
+	if isPulsarChatter(string(p)) {
+		return len(p), nil
+	}
+	return f.next.Write(p)
+}
+
+func isPulsarChatter(entry string) bool {
+	msg := ansiEscape.ReplaceAllString(logTimestamp.ReplaceAllString(entry, ""), "")
+	if strings.Contains(msg, "[Pulsar] ") || strings.Contains(msg, "Pulsar Handler:") || strings.HasPrefix(msg, "=====") {
+		return true
+	}
+	for _, prefix := range []string{"Topic: ", "EventType: ", "Timestamp: ", "Payload:"} {
+		if strings.HasPrefix(msg, prefix) {
+			return true
+		}
+	}
+	trimmed := strings.TrimSpace(msg)
+	return strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, `"eventType"`) && strings.Contains(trimmed, `"topic"`)
 }

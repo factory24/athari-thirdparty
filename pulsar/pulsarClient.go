@@ -23,15 +23,19 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// tracer uses whatever TracerProvider athari-thirdparty/tracing.Connect()
-// already registered globally in this service — no separate wiring needed
-// per caller. Messaging semantic conventions (messaging.system,
-// messaging.destination.name, messaging.operation) are what power SigNoz's
-// (and Jaeger's) "Messaging Queues" view; without them a queue is
-// functionally invisible there even though traces/spans exist elsewhere.
-var tracer = otel.Tracer("pulsar")
+// Per-message spans are opt-in (OTEL_PULSAR_TRACES=true): they draw a "pulsar" node into every
+// service map and outnumber the request spans. Trace context is still propagated either way.
+var tracer = pulsarTracer()
+
+func pulsarTracer() trace.Tracer {
+	if strings.EqualFold(os.Getenv("OTEL_PULSAR_TRACES"), "true") {
+		return otel.Tracer("pulsar")
+	}
+	return noop.NewTracerProvider().Tracer("pulsar")
+}
 
 const (
 	maxPublishRetries = 5
@@ -75,15 +79,6 @@ func NewPulsarClient() PulsarClient {
 func newStringKeyReader(pubKeyStr, privKeyStr string) (crypto.KeyReader, error) {
 	pubKeyStr = strings.ReplaceAll(pubKeyStr, `\n`, "\n")
 	privKeyStr = strings.ReplaceAll(privKeyStr, `\n`, "\n")
-
-	PulsarLogInfo("Public Key (first 20 chars): %s", pubKeyStr[:20])
-	PulsarLogInfo("Public Key (last 20 chars): %s", pubKeyStr[len(pubKeyStr)-20:])
-	PulsarLogInfo("Private Key (first 20 chars): %s", privKeyStr[:20])
-	PulsarLogInfo("Private Key (last 20 chars): %s", privKeyStr[len(privKeyStr)-20:])
-
-	// Log the length of the key strings for debugging
-	fmt.Printf("Public Key Length: %d\n", len(pubKeyStr))
-	fmt.Printf("Private Key Length: %d\n", len(privKeyStr))
 
 	pubBlock, _ := pem.Decode([]byte(pubKeyStr))
 	if pubBlock == nil {
