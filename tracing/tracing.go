@@ -130,6 +130,10 @@ func (c *tracingClient) Connect() func(context.Context) error {
 		}
 	}
 
+	if shutdownLogs := startLogShipping(ctx, c.config, res); shutdownLogs != nil {
+		shutdownFuncs = append(shutdownFuncs, shutdownLogs)
+	}
+
 	log.Println("tracing: connected to otel-collector at", c.config.Endpoint)
 	return func(ctx context.Context) error {
 		var errs []error
