@@ -3,7 +3,9 @@ package tracingClient
 import (
 	"context"
 	"errors"
+	"go.opentelemetry.io/otel/codes"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -152,6 +154,7 @@ func EchoMiddleware(serviceName string) echo.MiddlewareFunc {
 			ctx := propagator.Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header))
 
 			ctx, span := tracer.Start(ctx, c.Request().Method+" "+c.Path(),
+				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(
 					attribute.String("http.method", c.Request().Method),
 					attribute.String("http.route", c.Path()),
@@ -166,7 +169,12 @@ func EchoMiddleware(serviceName string) echo.MiddlewareFunc {
 			if err != nil {
 				span.RecordError(err)
 			}
-			span.SetAttributes(attribute.Int("http.status_code", c.Response().Status))
+			status := c.Response().Status
+			span.SetAttributes(attribute.Int("http.status_code", status))
+			// Only 5xx is a server error; a 4xx is the caller's mistake, not this service's.
+			if status >= 500 {
+				span.SetStatus(codes.Error, http.StatusText(status))
+			}
 			return err
 		}
 	}
