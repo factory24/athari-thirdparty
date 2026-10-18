@@ -159,6 +159,28 @@ func (p *pulsarClient) Connect() {
 	PulsarLogSuccess("Client connected successfully to %s", p.url)
 }
 
+// encryption is nil without a key reader: pulsar-client-go dereferences it on
+// the first send, in the producer goroutine, and takes the process down.
+func (p *pulsarClient) encryption() *pulsar.ProducerEncryptionInfo {
+	if p.keyReader == nil {
+		return nil
+	}
+	return &pulsar.ProducerEncryptionInfo{
+		KeyReader: p.keyReader,
+		Keys:      p.encKeys,
+	}
+}
+
+func (p *pulsarClient) decryption() *pulsar.MessageDecryptionInfo {
+	if p.keyReader == nil {
+		return nil
+	}
+	return &pulsar.MessageDecryptionInfo{
+		KeyReader:                   p.keyReader,
+		ConsumerCryptoFailureAction: 1,
+	}
+}
+
 func (p *pulsarClient) GetTopics() []string {
 	pulsarTopics := os.Getenv("EVENT_TOPICS")
 	if pulsarTopics == "" {
@@ -205,11 +227,7 @@ func (p *pulsarClient) ListenOnTopics(topics []string, subscriptionName string, 
 				DeadLetterTopic:         dlqTopic,
 				InitialSubscriptionName: subscriptionName,
 			},
-			Decryption: &pulsar.MessageDecryptionInfo{
-				KeyReader:                   p.keyReader,
-				MessageCrypto:               nil,
-				ConsumerCryptoFailureAction: 1,
-			},
+			Decryption: p.decryption(),
 		}
 
 		consumer, err := p.client.Subscribe(consumerOptions)
@@ -444,11 +462,8 @@ func (p *pulsarClient) GetOrCreateProducer(topic string) (pulsar.Producer, error
 			Topic:           topic,
 			DisableBatching: false,
 			Name:            producerName,
-			Encryption: &pulsar.ProducerEncryptionInfo{
-				KeyReader: p.keyReader,
-				Keys:      p.encKeys,
-			},
-			SendTimeout: 30 * time.Second,
+			Encryption:      p.encryption(),
+			SendTimeout:     30 * time.Second,
 		})
 		if err == nil {
 			PulsarLogSuccess("Producer name ::::: %s", producerName)
@@ -519,11 +534,7 @@ func (p *pulsarClient) ProcessDLQMessages(dlqTopic, targetTopic string, maxMessa
 		SubscriptionName: subscriptionName,
 		Type:             pulsar.Shared,
 		MessageChannel:   channel,
-		Decryption: &pulsar.MessageDecryptionInfo{
-			KeyReader:                   p.keyReader,
-			MessageCrypto:               nil,
-			ConsumerCryptoFailureAction: 1,
-		},
+		Decryption:       p.decryption(),
 	}
 
 	consumer, err := p.client.Subscribe(consumerOptions)

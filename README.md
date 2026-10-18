@@ -41,8 +41,10 @@ Wrapper for the Elasticsearch v8 client for indexing and searching documents.
 ### 5. Infisical (`infisical/`)
 Integration with Infisical for secret management and environment variable injection.
 
-### 6. ChirpStack (`chirpstack/`)
-Clients for interacting with the ChirpStack LoRaWAN Network Server API.
+### 6. Network connectivity — moved out
+The former network-server client lived here as `chirpstack/`. It is replaced by
+`github.com/factory24/connectivity-sdk` (vendor-neutral, source in
+`companies/network-company/sdk/`), which services import directly.
 
 ### 7. Payments (`payments/`)
 Standardized interfaces for multiple payment gateways (e.g., Arkesel, Hubtel).

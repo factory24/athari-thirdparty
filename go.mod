@@ -6,7 +6,6 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0
 	github.com/OneSignal/onesignal-go-api v1.0.4
 	github.com/apache/pulsar-client-go v0.15.1-candidate-1
-	github.com/chirpstack/chirpstack/api/go/v4 v4.16.2
 	github.com/elastic/go-elasticsearch/v8 v8.17.1
 	github.com/factory24/flow-system v0.12.0
 	github.com/getsentry/sentry-go v0.46.2
@@ -28,8 +27,6 @@ require (
 	go.opentelemetry.io/otel/sdk/log v0.20.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
-	google.golang.org/grpc v1.81.1
-	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -137,6 +134,8 @@ require (
 	google.golang.org/api v0.219.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/grpc v1.81.1 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apimachinery v0.32.3 // indirect
